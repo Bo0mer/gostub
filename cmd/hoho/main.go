@@ -280,7 +280,7 @@ func (b *MonitoringMethodBuilder) Build() ast.Decl {
 
 	// Record operation duration
 	//   m.opsDuration.Observe(time.Since(start))
-	b.methodBuilder.AddStatementBuilder(NewRecordOpDuraton(b.timePackageAlias, b.opsDuration))
+	b.methodBuilder.AddStatementBuilder(NewRecordOpDuraton(b.timePackageAlias, b.opsDuration, b.method.MethodName))
 
 	// Add increase failed operations statement
 	//   if err != nil { m.failedOps.Add(1) }
@@ -392,19 +392,29 @@ func (i *IncreaseFailedOps) Build() ast.Stmt {
 		return &ast.EmptyStmt{}
 	}
 
-	callExpr := &ast.CallExpr{
+	callWithExpr := &ast.CallExpr{
 		Fun: &ast.SelectorExpr{
 			X:   i.counterField,
+			Sel: ast.NewIdent("With"),
+		},
+		Args: []ast.Expr{
+			&ast.BasicLit{Kind: token.STRING, Value: `"operation"`},
+			&ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf(`"%s"`, toSnakeCase(i.method.MethodName))},
+		},
+	}
+
+	callAddExpr := &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X:   callWithExpr,
 			Sel: ast.NewIdent("Add"),
 		},
-		Args: []ast.Expr{&ast.BasicLit{
-			Kind:  token.FLOAT,
-			Value: "1",
-		}},
+		Args: []ast.Expr{
+			&ast.BasicLit{Kind: token.FLOAT, Value: "1"},
+		},
 	}
 
 	callStmt := &ast.ExprStmt{
-		X: callExpr,
+		X: callAddExpr,
 	}
 
 	return &ast.IfStmt{
@@ -466,12 +476,14 @@ func (r *startTimeRecorder) Build() ast.Stmt {
 type RecordOpDuration struct {
 	timePackageAlias string
 	opsDuration      *ast.SelectorExpr
+	operationName    string
 }
 
-func NewRecordOpDuraton(timePackageAlias string, opsDuration *ast.SelectorExpr) *RecordOpDuration {
+func NewRecordOpDuraton(timePackageAlias string, opsDuration *ast.SelectorExpr, operationName string) *RecordOpDuration {
 	return &RecordOpDuration{
 		timePackageAlias: timePackageAlias,
 		opsDuration:      opsDuration,
+		operationName:    operationName,
 	}
 }
 
@@ -484,9 +496,20 @@ func (r *RecordOpDuration) Build() ast.Stmt {
 		Args: []ast.Expr{ast.NewIdent("_start")},
 	}
 
-	observeCallExpr := &ast.CallExpr{
+	callWithExpr := &ast.CallExpr{
 		Fun: &ast.SelectorExpr{
 			X:   r.opsDuration,
+			Sel: ast.NewIdent("With"),
+		},
+		Args: []ast.Expr{
+			&ast.BasicLit{Kind: token.STRING, Value: `"operation"`},
+			&ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf(`"%s"`, toSnakeCase(r.operationName))},
+		},
+	}
+
+	observeCallExpr := &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X:   callWithExpr,
 			Sel: ast.NewIdent("Observe"),
 		},
 		Args: []ast.Expr{timeSinceCallExpr},
