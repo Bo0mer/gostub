@@ -7,7 +7,11 @@ import (
 	"github.com/mokiat/gostub/util"
 )
 
-func NewResolver(model *GeneratorModel, locator *resolution.Locator) *Resolver {
+type Importer interface {
+	AddImport(pkgName, location string) string
+}
+
+func NewResolver(model Importer, locator *resolution.Locator) *Resolver {
 	return &Resolver{
 		model:   model,
 		locator: locator,
@@ -15,7 +19,7 @@ func NewResolver(model *GeneratorModel, locator *resolution.Locator) *Resolver {
 }
 
 type Resolver struct {
-	model   *GeneratorModel
+	model   Importer
 	locator *resolution.Locator
 }
 
