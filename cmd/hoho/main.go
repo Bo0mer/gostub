@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"strings"
 	"unicode"
 
@@ -16,12 +18,38 @@ import (
 	"github.com/mokiat/gostub/util"
 )
 
+const usage = `Usage: mongen [flags] <package> <interface>
+  -w <value> Output file, package or directory.
+`
+
+var (
+	pkgPath       string
+	interfaceName string
+	outputPath    string
+)
+
+func init() {
+	flag.StringVar(&outputPath, "w", "", "Output package, file, or directory")
+}
+
 func main() {
+	flag.Parse()
+	if flag.NArg() != 2 {
+		fmt.Fprintf(os.Stderr, usage)
+		os.Exit(2)
+	}
+	pkgPath = flag.Arg(0)
+	interfaceName = flag.Arg(1)
+	var outputPkg string
+
+	switch outputPath {
+	case "":
+		outputPkg = path.Base(pkgPath) + "mws"
+	}
+
 	locator := resolution.NewLocator()
 
-	interfacePath := "github.com/mokiat/gostub/cmd/hoho/example"
-	interfaceName := "Example"
-	context := resolution.NewSingleLocationContext(interfacePath)
+	context := resolution.NewSingleLocationContext(pkgPath)
 	d, err := locator.FindIdentType(context, ast.NewIdent(interfaceName))
 	if err != nil {
 		log.Fatal(err)
@@ -30,9 +58,9 @@ func main() {
 	typeName := fmt.Sprintf("monitoring%s", interfaceName)
 
 	fileBuilder := generator.NewFileBuilder()
-	fileBuilder.SetPackage("examplemw")
+	fileBuilder.SetPackage(outputPkg)
 
-	model := NewModel(interfacePath, interfaceName, typeName, fileBuilder)
+	model := NewModel(pkgPath, interfaceName, typeName, fileBuilder)
 	generator := Generator{
 		Model:    model,
 		Locator:  locator,
@@ -94,11 +122,94 @@ type Model struct {
 	opsDuration      *ast.SelectorExpr
 }
 
+type constructorBuilder struct {
+	metricsPackageName   string
+	interfacePackageName string
+	interfaceName        string
+}
+
+func newConstructorBuilder(metricsPackageName, packageName, interfaceName string) *constructorBuilder {
+	return &constructorBuilder{
+		metricsPackageName:   metricsPackageName,
+		interfacePackageName: packageName,
+		interfaceName:        interfaceName,
+	}
+}
+
+func (c *constructorBuilder) Build() ast.Decl {
+
+	funcBody := &ast.BlockStmt{
+		List: []ast.Stmt{
+			&ast.ReturnStmt{
+				Results: []ast.Expr{
+					// TODO(borshukov): Find a better way to do this.
+					ast.NewIdent(fmt.Sprintf("&monitoring%s{next, totalOps, failedOps, opsDuration}", c.interfaceName)),
+				},
+			},
+		},
+	}
+
+	funcName := fmt.Sprintf("NewMonitoring%s", c.interfaceName)
+	return &ast.FuncDecl{
+		Doc: &ast.CommentGroup{
+			List: []*ast.Comment{&ast.Comment{
+				Text: fmt.Sprintf("// %s creates new monitoring middleware.", funcName),
+			}},
+		},
+		Name: ast.NewIdent(funcName),
+		Type: &ast.FuncType{
+			Params: &ast.FieldList{
+				List: []*ast.Field{
+					&ast.Field{
+						Names: []*ast.Ident{ast.NewIdent("next")},
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent(c.interfacePackageName),
+							Sel: ast.NewIdent(c.interfaceName),
+						},
+					},
+					&ast.Field{
+						Names: []*ast.Ident{ast.NewIdent("totalOps")},
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent(c.metricsPackageName),
+							Sel: ast.NewIdent("Counter"),
+						},
+					},
+					&ast.Field{
+						Names: []*ast.Ident{ast.NewIdent("failedOps")},
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent(c.metricsPackageName),
+							Sel: ast.NewIdent("Counter"),
+						},
+					},
+					&ast.Field{
+						Names: []*ast.Ident{ast.NewIdent("opsDuration")},
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent(c.metricsPackageName),
+							Sel: ast.NewIdent("Histogram"),
+						},
+					},
+				},
+			},
+			Results: &ast.FieldList{
+				List: []*ast.Field{
+					&ast.Field{
+						Names: []*ast.Ident{ast.NewIdent("")},
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent(c.interfacePackageName),
+							Sel: ast.NewIdent(c.interfaceName),
+						},
+					},
+				},
+			},
+		},
+		Body: funcBody,
+	}
+}
+
 // NewModel creates new model.
 func NewModel(interfacePath, interfaceName, structName string, fileBuilder *generator.FileBuilder) *Model {
 	structBuilder := generator.NewStructBuilder()
 	structBuilder.SetName(structName)
-
 	fileBuilder.AddDeclarationBuilder(structBuilder)
 
 	m := &Model{
@@ -115,15 +226,18 @@ func NewModel(interfacePath, interfaceName, structName string, fileBuilder *gene
 			Sel: ast.NewIdent("failedOps"), // member name
 		},
 		opsDuration: &ast.SelectorExpr{
-			X:   ast.NewIdent("m"),            // receiver name
-			Sel: ast.NewIdent("opsDuraation"), // member name
+			X:   ast.NewIdent("m"),           // receiver name
+			Sel: ast.NewIdent("opsDuration"), // member name
 		},
 	}
-
+	sourcePackageAlias := m.AddImport("", interfacePath)
+	metricsAlias := m.AddImport("", "github.com/go-kit/kit/metrics")
 	m.timePackageAlias = m.AddImport("", "time")
 
-	structBuilder.AddFieldBuilder(NewFieldBuilder("next", m.AddImport("", interfacePath), interfaceName))
-	metricsAlias := m.AddImport("", "githbu.com/go-kit/kit/metrics")
+	constructorBuilder := newConstructorBuilder(metricsAlias, sourcePackageAlias, interfaceName)
+	fileBuilder.AddDeclarationBuilder(constructorBuilder)
+
+	structBuilder.AddFieldBuilder(NewFieldBuilder("next", sourcePackageAlias, interfaceName))
 	structBuilder.AddFieldBuilder(NewFieldBuilder("totalOps", metricsAlias, "Counter"))
 	structBuilder.AddFieldBuilder(NewFieldBuilder("failedOps", metricsAlias, "Counter"))
 	structBuilder.AddFieldBuilder(NewFieldBuilder("opsDuration", metricsAlias, "Histogram"))
@@ -496,6 +610,13 @@ func (r *RecordOpDuration) Build() ast.Stmt {
 		Args: []ast.Expr{ast.NewIdent("_start")},
 	}
 
+	durationSecondsExpr := &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X:   timeSinceCallExpr,
+			Sel: ast.NewIdent("Seconds"),
+		},
+	}
+
 	callWithExpr := &ast.CallExpr{
 		Fun: &ast.SelectorExpr{
 			X:   r.opsDuration,
@@ -512,7 +633,7 @@ func (r *RecordOpDuration) Build() ast.Stmt {
 			X:   callWithExpr,
 			Sel: ast.NewIdent("Observe"),
 		},
-		Args: []ast.Expr{timeSinceCallExpr},
+		Args: []ast.Expr{durationSecondsExpr},
 	}
 
 	return &ast.ExprStmt{X: observeCallExpr}

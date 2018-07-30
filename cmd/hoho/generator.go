@@ -46,6 +46,7 @@ func (g *Generator) processMethod(context *resolution.LocatorContext, name strin
 	if err != nil {
 		return err
 	}
+
 	source := &MethodConfig{
 		MethodName:    name,
 		MethodParams:  normalizedParams,
