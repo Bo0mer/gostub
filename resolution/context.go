@@ -58,7 +58,7 @@ func (c *LocatorContext) CandidateLocations(alias string) []string {
 	if location, found := c.AliasedLocation(alias); found {
 		return []string{location}
 	}
-	return c.NonLocalNonAliasedLocations()
+	return c.NonLocalNonAliasedLocations(alias)
 }
 
 func (c *LocatorContext) LocalLocations() []string {
@@ -71,10 +71,10 @@ func (c *LocatorContext) LocalLocations() []string {
 	return result
 }
 
-func (c *LocatorContext) NonLocalNonAliasedLocations() []string {
+func (c *LocatorContext) NonLocalNonAliasedLocations(alias string) []string {
 	result := []string{}
 	for _, imp := range c.imports {
-		if imp.Alias == "" {
+		if imp.Alias == "" && strings.HasSuffix(imp.Location, alias) {
 			result = append(result, imp.Location)
 		}
 	}
